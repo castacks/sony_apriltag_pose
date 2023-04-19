@@ -8,6 +8,7 @@ import cv2
 import glob
 import numpy as np
 import os
+# import yaml
 
 def test_directory_from_filename(fn):
     d = os.path.dirname(fn)
@@ -169,6 +170,83 @@ def chain_pose(Rt_in_cam_0, Rt_in_cam_1):
     R0_T = np.transpose(R0)
     return R0_T @ R1, R0_T @ (t1 - t0)
 
+def assemble_R_t(R, t):
+    '''Assemble a 4x4 transformation matrix from R and t.
+    '''
+    T = np.eye(4)
+    T[:3, :3] = R
+    T[:3,  3] = t.flatten()
+    return T
+
+def pose_chain_2_abs_poses(pose_chain):
+    '''
+    pose_chain is a dict. The key is a string of the following format:
+    "id0-id1"
+    where id0 < id1. The value is a 4 x 4 matrix, representing the pose of id1 w.r.t. id0, 
+    measured in the frame of id0.
+    
+    It is assumed that the pose_chain contains a chain of poses from index 0. Then this function
+    queries the pose chain for the pose pairs 0-1, 1-2, ... one by one. The output yaml file 
+    records the poses of all the nodes in the chain w.r.t. index 0 whose pose is the origin.
+    '''
+    
+    # Get the total number of pairs in the pose chain.
+    n_pairs = len(pose_chain)
+    
+    poses = [ np.eye(4) ]
+    
+    # Query the pose chain for the pose pairs 0-1, 1-2, ... one by one.
+    for i in range(n_pairs):
+        chain_id = f'{i}-{i+1}'
+        rel_pose = pose_chain[chain_id]
+        abs_pose = poses[i]
+        poses.append( abs_pose @ rel_pose )
+        
+    return poses
+
+# def dump_pose_chain_to_yaml_file(out_file, pose_chain):
+#     '''Dump pose chain to a yaml file.
+#     '''
+    
+#     poses = pose_chain_2_abs_poses(pose_chain)
+    
+#     pose_dicts = {
+#         'poses': [ {'id': i, 'T': pose.tolist()} for i, pose in enumerate(poses) ] }
+    
+#     with open(out_file, 'w') as f:
+#             yaml.dump(pose_dicts, f)
+            
+#     return pose_dicts
+
+def dump_pose_chain_to_yaml_file(out_file, pose_chain, new_shape, tag_size):
+    '''Dump pose chain to a yaml file.
+    '''
+    
+    poses = pose_chain_2_abs_poses(pose_chain)
+    
+    fs = cv2.FileStorage(out_file, cv2.FILE_STORAGE_WRITE)
+    
+    fs.write('tag_size', tag_size)
+    
+    fs.startWriteStruct('shape', cv2.FileNode_MAP)
+    fs.write('H', new_shape[0])
+    fs.write('W', new_shape[1])
+    fs.endWriteStruct()
+    
+    fs.startWriteStruct('poses', cv2.FileNode_MAP)
+    
+    for i, pose in enumerate(poses):
+        fs.write(f'T{i}', pose)
+    
+    fs.endWriteStruct()
+    
+    fs.release()
+    
+    pose_dicts = {
+        'poses': [ {'id': i, 'T': pose.tolist()} for i, pose in enumerate(poses) ] }
+            
+    return pose_dicts
+
 if __name__ == '__main__':
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Estimate camera pose from AprilTag detection')
@@ -199,7 +277,8 @@ if __name__ == '__main__':
     
     # Get the remap matrices and the new camera matrix.
     original_shape = ( 1080, 1920 ) # H, W.
-    new_shape = (360, 640) # H, W.
+    # new_shape = (360, 640) # H, W.
+    new_shape = (512, 910) # H, W.
     new_cam_matrix, map0, map1 = calculate_new_camera_matrix_and_remap_grids(
         original_shape, new_shape, camera_matrix, distortion_coeffs )
     
@@ -207,6 +286,13 @@ if __name__ == '__main__':
 
     # Find all images in the input directory.
     files = find_files(args.in_dir, ext=args.ext)
+    
+    # Prepare the calibration output.
+    # pose_chain is a dict. The key is a string of the following format:
+    # "id0-id1"
+    # where id0 < id1. The value is a 4 x 4 matrix, representing the pose of id1 w.r.t. id0, 
+    # measured in the frame of id0.
+    pose_chain = dict()
     
     for fn in files:
         print(fn)
@@ -229,8 +315,13 @@ if __name__ == '__main__':
 
         if tag_ids[0] < tag_ids[1]:
             chained_pose = chain_pose(poses[0], poses[1])
+            chain_id = f'{tag_ids[0]}-{tag_ids[1]}'
         else:
             chained_pose = chain_pose(poses[1], poses[0])
+            chain_id = f'{tag_ids[1]}-{tag_ids[0]}'
+
+        assert chain_id not in pose_chain, f'chain_id = {chain_id} already exists. '
+        pose_chain[chain_id] = assemble_R_t(*chained_pose)
 
         for id, pose in zip(tag_ids, poses):
             print(f'Tag ID: {id}')
@@ -238,9 +329,8 @@ if __name__ == '__main__':
             print(f'R = \n{pose[0]}')
             print(f't = \n{pose[1]}')
 
-        print('Chained pose: ')
-        print(f'R = \n{chained_pose[0]}')
-        print(f't = \n{chained_pose[1]}')
+        print(f'Chained pose of {chain_id}: ')
+        print(f'T = \n{pose_chain[chain_id]}')
 
         # Show the image with detected tags
         cv2.imshow("AprilTags", img)
@@ -256,4 +346,10 @@ if __name__ == '__main__':
     
     cv2.destroyAllWindows()
     
+    # Save the pose chain to a YAML file.
+    out_fn = os.path.join(args.out_dir, 'poses.yaml')
+    pose_dicts = dump_pose_chain_to_yaml_file(out_fn, pose_chain, new_shape, tag_size=args.tag_size)
+    
+    for pose_dict in pose_dicts['poses']:
+        print(f'{pose_dict["id"]}.T = \n{pose_dict["T"]}')
         
