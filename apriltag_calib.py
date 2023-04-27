@@ -256,7 +256,7 @@ if __name__ == '__main__':
                         help='The output directory. ')
     parser.add_argument('--ext', type=str, default='.jpg',
                         help='The extension of the images inlcuding the dot (default: .jpg). ')
-    parser.add_argument('--tag-size', type=float, default=0.2, 
+    parser.add_argument('--tag-size', type=float, default=0.0865, 
                         help='Size of the AprilTag in meters (default: 0.2)')
     args = parser.parse_args()
 

@@ -1,4 +1,6 @@
 
+# This script draw the corner points of the calibrated apriltags for visualization. 
+
 import argparse
 import cv2
 import matplotlib.pyplot as plt
